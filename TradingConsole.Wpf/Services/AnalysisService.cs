@@ -385,58 +385,90 @@ namespace TradingConsole.Wpf.Services
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
             var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
 
+            // Only run this process if the market isn't open yet.
             if (istNow.TimeOfDay >= new TimeSpan(9, 15, 0))
             {
-                Debug.WriteLine($"[BackfillPrevDay] Skipping, market is open. Current time: {istNow.TimeOfDay}");
+                Debug.WriteLine($"[BackfillPrevDay] Skipping for {instrument.DisplayName}, market is open.");
                 return;
             }
 
             DateTime dateToFetch = GetPreviousTradingDay(istNow);
 
+            // Check if we already have a profile for this instrument on the target date.
             if (_historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.Any(p => p.Date.Date == dateToFetch.Date) == true)
             {
                 Debug.WriteLine($"[BackfillPrevDay] Profile for {instrument.DisplayName} on {dateToFetch:yyyy-MM-dd} already exists. Skipping fetch.");
                 return;
             }
 
-            Debug.WriteLine($"[BackfillPrevDay] Starting backfill process for {instrument.DisplayName} for date: {dateToFetch:yyyy-MM-dd}.");
+            Debug.WriteLine($"[BackfillPrevDay] Starting backfill for {instrument.DisplayName} for date: {dateToFetch:yyyy-MM-dd}.");
 
             try
             {
-                var scripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
-                if (scripInfo == null)
+                var priceScripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
+                if (priceScripInfo == null)
                 {
-                    Debug.WriteLine($"[BackfillPrevDay] FAILED: Could not find scrip info for {instrument.SecurityId}.");
+                    Debug.WriteLine($"[BackfillPrevDay] FAILED: Could not find scrip info for price instrument {instrument.SecurityId}.");
                     return;
                 }
 
-                var historicalData = await _apiClient.GetIntradayHistoricalDataAsync(scripInfo, "1", dateToFetch);
+                // Default to using the instrument's own data unless it's a spot index.
+                var volumeScripInfo = priceScripInfo;
 
-                if (historicalData?.Open == null || !historicalData.Open.Any())
+                if (instrument.InstrumentType == "INDEX")
+                {
+                    Debug.WriteLine($"[BackfillPrevDay] {instrument.DisplayName} is an index. Finding corresponding future for volume data...");
+                    var futureForIndex = _scripMasterService.FindNearMonthFutureSecurityId(instrument.UnderlyingSymbol);
+                    if (futureForIndex != null)
+                    {
+                        volumeScripInfo = futureForIndex;
+                        Debug.WriteLine($"[BackfillPrevDay] Found future: {futureForIndex.SemInstrumentName} ({futureForIndex.SecurityId}) for volume.");
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"[BackfillPrevDay] FAILED: Could not find a future contract for index {instrument.DisplayName}. Cannot build historical profile.");
+                        return;
+                    }
+                }
+
+                var priceHistoricalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", dateToFetch);
+                var volumeHistoricalData = (priceScripInfo.SecurityId == volumeScripInfo.SecurityId)
+                    ? priceHistoricalData
+                    : await _apiClient.GetIntradayHistoricalDataAsync(volumeScripInfo, "1", dateToFetch);
+
+                if (priceHistoricalData?.Open == null || !priceHistoricalData.Open.Any() ||
+                    volumeHistoricalData?.Volume == null || !volumeHistoricalData.Volume.Any())
                 {
                     Debug.WriteLine($"[BackfillPrevDay] No historical data points returned from API for {instrument.DisplayName} for date {dateToFetch:yyyy-MM-dd}.");
                     return;
                 }
 
-                Debug.WriteLine($"[BackfillPrevDay] SUCCESS: Received {historicalData.Open.Count} historical data points for {instrument.DisplayName}.");
+                Debug.WriteLine($"[BackfillPrevDay] SUCCESS: Received {priceHistoricalData.Open.Count} price points and {volumeHistoricalData.Volume.Count} volume points.");
 
                 decimal tickSize = GetTickSize(instrument);
                 var sessionStartTime = dateToFetch.Date.Add(new TimeSpan(9, 15, 0));
                 var historicalProfile = new MarketProfile(tickSize, sessionStartTime);
 
-                for (int i = 0; i < historicalData.Open.Count; i++)
+                int candleCount = Math.Min(priceHistoricalData.Open.Count, volumeHistoricalData.Volume.Count);
+
+                for (int i = 0; i < candleCount; i++)
                 {
-                    var candle = new Candle
+                    var priceCandle = new Candle
                     {
-                        Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)historicalData.StartTime[i]).UtcDateTime,
-                        Open = historicalData.Open[i],
-                        High = historicalData.High[i],
-                        Low = historicalData.Low[i],
-                        Close = historicalData.Close[i],
-                        Volume = (long)historicalData.Volume[i],
-                        OpenInterest = historicalData.OpenInterest.Count > i ? (long)historicalData.OpenInterest[i] : 0,
+                        Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)priceHistoricalData.StartTime[i]).UtcDateTime,
+                        Open = priceHistoricalData.Open[i],
+                        High = priceHistoricalData.High[i],
+                        Low = priceHistoricalData.Low[i],
+                        Close = priceHistoricalData.Close[i],
                     };
-                    UpdateMarketProfile(historicalProfile, candle, candle); // For historical, price and volume candle are the same
+
+                    var volumeCandle = new Candle
+                    {
+                        Volume = (long)volumeHistoricalData.Volume[i],
+                        OpenInterest = volumeHistoricalData.OpenInterest.Count > i ? (long)volumeHistoricalData.OpenInterest[i] : 0,
+                    };
+
+                    UpdateMarketProfile(historicalProfile, priceCandle, volumeCandle);
                 }
 
                 CalculateDevelopingProfileLevels(historicalProfile);
@@ -458,6 +490,9 @@ namespace TradingConsole.Wpf.Services
             }
         }
 
+        // ====================================================================================================
+        // === MODIFICATION START: This function is now corrected to use the hybrid profile logic for indices ===
+        // ====================================================================================================
         private async Task BackfillCurrentDayCandlesAsync(DashboardInstrument instrument)
         {
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
@@ -469,39 +504,77 @@ namespace TradingConsole.Wpf.Services
 
             try
             {
-                var scripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
-                if (scripInfo == null) return;
+                // This logic mirrors the fix in BackfillAndSavePreviousDayProfileAsync
+                var priceScripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
+                if (priceScripInfo == null) return;
 
-                var historicalData = await _apiClient.GetIntradayHistoricalDataAsync(scripInfo, "1", istNow.Date);
-
-                if (historicalData?.Open != null && historicalData.Open.Any())
+                var volumeScripInfo = priceScripInfo;
+                if (instrument.InstrumentType == "INDEX")
                 {
-                    var candles = new List<Candle>();
-                    for (int i = 0; i < historicalData.Open.Count; i++)
+                    var futureForIndex = _scripMasterService.FindNearMonthFutureSecurityId(instrument.UnderlyingSymbol);
+                    if (futureForIndex != null)
                     {
-                        var candle = new Candle
+                        volumeScripInfo = futureForIndex;
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"[BackfillCurrentDay] FAILED: Could not find a future for index {instrument.DisplayName}.");
+                        return;
+                    }
+                }
+
+                var priceHistoricalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", istNow.Date);
+                var volumeHistoricalData = (priceScripInfo.SecurityId == volumeScripInfo.SecurityId)
+                    ? priceHistoricalData
+                    : await _apiClient.GetIntradayHistoricalDataAsync(volumeScripInfo, "1", istNow.Date);
+
+                if (priceHistoricalData?.Open == null || !priceHistoricalData.Open.Any() ||
+                    volumeHistoricalData?.Volume == null || !volumeHistoricalData.Volume.Any())
+                {
+                    Debug.WriteLine($"[BackfillCurrentDay] No historical data points for {instrument.DisplayName}.");
+                    return;
+                }
+
+                var candles = new List<Candle>();
+                int candleCount = Math.Min(priceHistoricalData.Open.Count, volumeHistoricalData.Volume.Count);
+
+                if (_marketProfiles.TryGetValue(instrument.SecurityId, out var liveProfile))
+                {
+                    for (int i = 0; i < candleCount; i++)
+                    {
+                        var priceCandle = new Candle
                         {
-                            Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)historicalData.StartTime[i]).UtcDateTime,
-                            Open = historicalData.Open[i],
-                            High = historicalData.High[i],
-                            Low = historicalData.Low[i],
-                            Close = historicalData.Close[i],
-                            Volume = (long)historicalData.Volume[i],
-                            OpenInterest = historicalData.OpenInterest.Count > i ? (long)historicalData.OpenInterest[i] : 0,
+                            Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)priceHistoricalData.StartTime[i]).UtcDateTime,
+                            Open = priceHistoricalData.Open[i],
+                            High = priceHistoricalData.High[i],
+                            Low = priceHistoricalData.Low[i],
+                            Close = priceHistoricalData.Close[i],
                         };
-                        candles.Add(candle);
 
-                        if (_marketProfiles.TryGetValue(instrument.SecurityId, out var liveProfile))
+                        var volumeCandle = new Candle
                         {
-                            UpdateMarketProfile(liveProfile, candle, candle);
-                        }
+                            Volume = (long)volumeHistoricalData.Volume[i],
+                            OpenInterest = volumeHistoricalData.OpenInterest.Count > i ? (long)volumeHistoricalData.OpenInterest[i] : 0,
+                        };
+
+                        // *** THIS IS THE FIX: Use the hybrid update method ***
+                        UpdateMarketProfile(liveProfile, priceCandle, volumeCandle);
+
+                        // Also add the full candle data for other indicator calculations
+                        priceCandle.Volume = volumeCandle.Volume;
+                        priceCandle.OpenInterest = volumeCandle.OpenInterest;
+                        candles.Add(priceCandle);
                     }
 
-                    foreach (var timeframe in _timeframes)
-                    {
-                        var aggregatedCandles = AggregateHistoricalCandles(candles, timeframe);
-                        _multiTimeframeCandles[instrument.SecurityId][timeframe] = aggregatedCandles;
-                    }
+                    // After processing all candles, finalize the profile calculation for display
+                    CalculateDevelopingProfileLevels(liveProfile);
+                }
+
+                // Aggregate the backfilled candles for multi-timeframe analysis
+                foreach (var timeframe in _timeframes)
+                {
+                    var aggregatedCandles = AggregateHistoricalCandles(candles, timeframe);
+                    _multiTimeframeCandles[instrument.SecurityId][timeframe] = aggregatedCandles;
                 }
             }
             catch (Exception ex)
@@ -509,16 +582,17 @@ namespace TradingConsole.Wpf.Services
                 Debug.WriteLine($"[BackfillCurrentDay] ERROR: {ex.Message}");
             }
         }
+        // ==================================================================================================
+        // === MODIFICATION END                                                                           ===
+        // ==================================================================================================
 
         #region Market Profile (TPO) and Volume Profile Calculation
 
-        // --- MODIFIED: This is the new core logic that takes separate price and volume data ---
         private void UpdateMarketProfile(MarketProfile profile, Candle priceCandle, Candle volumeCandle)
         {
             profile.UpdateInitialBalance(priceCandle);
             var tpoPeriod = profile.GetTpoPeriod(priceCandle.Timestamp);
 
-            // TPOs are built using the PRICE candle's range
             for (decimal price = priceCandle.Low; price <= priceCandle.High; price += profile.TickSize)
             {
                 var quantizedPrice = profile.QuantizePrice(price);
@@ -532,7 +606,6 @@ namespace TradingConsole.Wpf.Services
                 }
             }
 
-            // Volume is distributed at the typical price of the PRICE candle, but using the VOLUME from the volume candle
             var typicalPrice = (priceCandle.High + priceCandle.Low + priceCandle.Close) / 3;
             var typicalPriceQuantized = profile.QuantizePrice(typicalPrice);
             if (!profile.VolumeLevels.ContainsKey(typicalPriceQuantized))
@@ -1110,7 +1183,6 @@ namespace TradingConsole.Wpf.Services
                 oiSignal = CalculateOiSignal(oneMinCandles);
             }
 
-            // --- MODIFIED: Use the correct instrument for price action analysis ---
             var paSignals = CalculatePriceActionSignals(instrumentForAnalysis, dayVwap);
             string customLevelSignal = CalculateCustomLevelSignal(instrument);
 
@@ -1120,16 +1192,18 @@ namespace TradingConsole.Wpf.Services
             if (fiveMinCandles != null) candleSignal5Min = RecognizeCandlestickPattern(fiveMinCandles, result);
 
             string profileKey = instrument.SecurityId;
-            if (_marketProfiles.TryGetValue(profileKey, out var profile))
+            if (_marketProfiles.TryGetValue(profileKey, out var liveProfile))
             {
-                result.InitialBalanceSignal = GetInitialBalanceSignal(instrument.LTP, profile, instrument.SecurityId);
+                result.InitialBalanceSignal = GetInitialBalanceSignal(instrument.LTP, liveProfile, instrument.SecurityId);
+                result.InitialBalanceHigh = liveProfile.InitialBalanceHigh;
+                result.InitialBalanceLow = liveProfile.InitialBalanceLow;
 
-                if (profile.IsInitialBalanceSet)
+                if (liveProfile.IsInitialBalanceSet)
                 {
-                    result.DevelopingPoc = profile.DevelopingTpoLevels.PointOfControl;
-                    result.DevelopingVah = profile.DevelopingTpoLevels.ValueAreaHigh;
-                    result.DevelopingVal = profile.DevelopingTpoLevels.ValueAreaLow;
-                    result.DevelopingVpoc = profile.DevelopingVolumeProfile.VolumePoc;
+                    result.DevelopingPoc = liveProfile.DevelopingTpoLevels.PointOfControl;
+                    result.DevelopingVah = liveProfile.DevelopingTpoLevels.ValueAreaHigh;
+                    result.DevelopingVal = liveProfile.DevelopingTpoLevels.ValueAreaLow;
+                    result.DevelopingVpoc = liveProfile.DevelopingVolumeProfile.VolumePoc;
                 }
                 else
                 {
@@ -1139,11 +1213,22 @@ namespace TradingConsole.Wpf.Services
                     result.DevelopingVpoc = 0;
                 }
 
-                result.InitialBalanceHigh = profile.InitialBalanceHigh;
-                result.InitialBalanceLow = profile.InitialBalanceLow;
+                RunMarketProfileAnalysis(instrument, liveProfile, result);
+                _marketProfileService.UpdateProfile(instrument.SecurityId, liveProfile.ToMarketProfileData());
+            }
 
-                RunMarketProfileAnalysis(instrument, profile, result);
-                _marketProfileService.UpdateProfile(instrument.SecurityId, profile.ToMarketProfileData());
+            if (result.DevelopingPoc == 0)
+            {
+                var lastHistoricalProfile = _historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?
+                                                                      .OrderByDescending(p => p.Date)
+                                                                      .FirstOrDefault();
+                if (lastHistoricalProfile != null)
+                {
+                    result.DevelopingPoc = lastHistoricalProfile.TpoLevelsInfo.PointOfControl;
+                    result.DevelopingVah = lastHistoricalProfile.TpoLevelsInfo.ValueAreaHigh;
+                    result.DevelopingVal = lastHistoricalProfile.TpoLevelsInfo.ValueAreaLow;
+                    result.DevelopingVpoc = lastHistoricalProfile.VolumeProfileInfo.VolumePoc;
+                }
             }
 
 
@@ -1204,15 +1289,12 @@ namespace TradingConsole.Wpf.Services
             OnAnalysisUpdated?.Invoke(result);
         }
 
-        // --- MODIFIED: New, more robust method for IV Skew analysis ---
         private void RunIvSkewAnalysis(DashboardInstrument indexInstrument)
         {
             if (!_ivSkewStates.ContainsKey(indexInstrument.SecurityId)) return;
 
-            // Get the nearest expiry date for the index being analyzed.
             if (!_nearestExpiryDates.TryGetValue(indexInstrument.Symbol, out var expiryDate))
             {
-                // If we don't have the expiry date yet, we can't proceed.
                 return;
             }
 
@@ -1222,7 +1304,6 @@ namespace TradingConsole.Wpf.Services
             int strikeStep = GetStrikePriceStep(indexInstrument.Symbol);
             decimal atmStrike = Math.Round(indexInstrument.LTP / strikeStep) * strikeStep;
 
-            // Use a more reliable lookup based on specific properties, not just DisplayName parsing.
             var atmCall = _instrumentCache.Values.FirstOrDefault(i =>
                 i.InstrumentType == "OPTIDX" &&
                 i.UnderlyingSymbol == indexInstrument.Symbol &&

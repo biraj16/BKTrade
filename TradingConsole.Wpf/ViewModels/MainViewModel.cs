@@ -720,9 +720,6 @@ namespace TradingConsole.Wpf.ViewModels
 
                 await InitializeDashboardAsync();
                 await PreloadNearestExpiriesAsync();
-                // --- ADDED: Pass the loaded expiry dates to the analysis service ---
-                _analysisService.SetNearestExpiryDates(_nearestExpiryDates);
-
 
                 _ = Task.Run(LoadInitialOptionChainsAsync);
 
@@ -840,11 +837,7 @@ namespace TradingConsole.Wpf.ViewModels
                 FeedType = FeedTypeQuote,
                 IsFuture = (typePrefix == "FUT"),
                 UnderlyingSymbol = underlying,
-                InstrumentType = info.InstrumentType,
-                // --- MODIFIED: Populate new properties from ScripInfo ---
-                ExpiryDate = info.ExpiryDate,
-                StrikePrice = info.StrikePrice,
-                OptionType = info.OptionType
+                InstrumentType = info.InstrumentType
             };
 
             if (typePrefix == "IDX")
@@ -1387,8 +1380,16 @@ namespace TradingConsole.Wpf.ViewModels
                     var ceInfo = _scripMasterService.FindOptionScripInfo(scripMasterUnderlying, expiryDate, strike, "CE");
                     if (ceInfo != null)
                     {
-                        var inst = CreateDashboardInstrument(ceInfo);
-                        inst.UnderlyingSymbol = indexInstrument.Symbol; // Ensure correct underlying link
+                        var inst = new DashboardInstrument
+                        {
+                            Symbol = ceInfo.SemInstrumentName,
+                            DisplayName = ceInfo.SemInstrumentName,
+                            SecurityId = ceInfo.SecurityId,
+                            FeedType = FeedTypeQuote,
+                            SegmentId = optionSegmentId,
+                            UnderlyingSymbol = indexInstrument.Symbol,
+                            InstrumentType = ceInfo.InstrumentType
+                        };
                         newOptionInstruments.Add(inst);
                         newSubscriptions[inst.SecurityId] = inst.SegmentId;
                     }
@@ -1396,8 +1397,16 @@ namespace TradingConsole.Wpf.ViewModels
                     var peInfo = _scripMasterService.FindOptionScripInfo(scripMasterUnderlying, expiryDate, strike, "PE");
                     if (peInfo != null)
                     {
-                        var inst = CreateDashboardInstrument(peInfo);
-                        inst.UnderlyingSymbol = indexInstrument.Symbol; // Ensure correct underlying link
+                        var inst = new DashboardInstrument
+                        {
+                            Symbol = peInfo.SemInstrumentName,
+                            DisplayName = ceInfo.SemInstrumentName,
+                            SecurityId = peInfo.SecurityId,
+                            FeedType = FeedTypeQuote,
+                            SegmentId = optionSegmentId,
+                            UnderlyingSymbol = indexInstrument.Symbol,
+                            InstrumentType = ceInfo.InstrumentType
+                        };
                         newOptionInstruments.Add(inst);
                         newSubscriptions[inst.SecurityId] = inst.SegmentId;
                     }
