@@ -1289,6 +1289,7 @@ namespace TradingConsole.Wpf.Services
             OnAnalysisUpdated?.Invoke(result);
         }
 
+        // --- FIX START: This method now correctly maps the index name to the scrip master symbol ---
         private void RunIvSkewAnalysis(DashboardInstrument indexInstrument)
         {
             if (!_ivSkewStates.ContainsKey(indexInstrument.SecurityId)) return;
@@ -1304,16 +1305,19 @@ namespace TradingConsole.Wpf.Services
             int strikeStep = GetStrikePriceStep(indexInstrument.Symbol);
             decimal atmStrike = Math.Round(indexInstrument.LTP / strikeStep) * strikeStep;
 
+            // *** THIS IS THE FIX: Get the correct underlying symbol for the lookup ***
+            string underlyingForLookup = GetUnderlyingSymbolForScripMaster(indexInstrument.Symbol);
+
             var atmCall = _instrumentCache.Values.FirstOrDefault(i =>
                 i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == indexInstrument.Symbol &&
+                i.UnderlyingSymbol == underlyingForLookup && // Use the corrected symbol
                 i.OptionType == "CE" &&
                 i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
                 i.StrikePrice == atmStrike);
 
             var atmPut = _instrumentCache.Values.FirstOrDefault(i =>
                 i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == indexInstrument.Symbol &&
+                i.UnderlyingSymbol == underlyingForLookup && // Use the corrected symbol
                 i.OptionType == "PE" &&
                 i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
                 i.StrikePrice == atmStrike);
@@ -1380,6 +1384,7 @@ namespace TradingConsole.Wpf.Services
 
             result.IvSkewSignal = "Neutral";
         }
+        // --- FIX END ---
 
 
         private IntradayContext DetermineIntradayContext(AnalysisResult result)
@@ -1748,6 +1753,18 @@ namespace TradingConsole.Wpf.Services
 
 
         #region Helper Calculation Methods
+        // --- ADDED: New helper method to get the correct symbol for scrip master lookups ---
+        private string GetUnderlyingSymbolForScripMaster(string displayName)
+        {
+            return displayName switch
+            {
+                "Nifty 50" => "NIFTY",
+                "Nifty Bank" => "BANKNIFTY",
+                "Sensex" => "SENSEX",
+                _ => displayName
+            };
+        }
+
         // --- ADDED: Helper method to get strike step for an index ---
         private int GetStrikePriceStep(string underlyingSymbol)
         {
