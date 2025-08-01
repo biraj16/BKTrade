@@ -47,7 +47,6 @@ namespace TradingConsole.Wpf.ViewModels
         private readonly SignalLoggerService _signalLoggerService;
         private readonly NotificationService _notificationService;
         private readonly PerformanceService _performanceService;
-        // --- ADDED: Field for the new AutoTraderService ---
         private readonly AutoTraderService _autoTraderService;
         private readonly string _dhanClientId;
         private Timer? _optionChainRefreshTimer;
@@ -63,13 +62,11 @@ namespace TradingConsole.Wpf.ViewModels
         private Dictionary<string, DashboardInstrument> _dashboardInstrumentMap = new();
         private Dictionary<string, Position> _openPositionsMap = new();
 
-        // --- PERFORMANCE OPTIMIZATION: UI Throttling Fields ---
         private readonly Timer _uiUpdateTimer;
         private readonly ConcurrentDictionary<string, TickerPacket> _pendingTickerUpdates = new();
         private readonly ConcurrentDictionary<string, QuotePacket> _pendingQuoteUpdates = new();
         private readonly ConcurrentDictionary<string, OiPacket> _pendingOiUpdates = new();
         private readonly ConcurrentDictionary<string, PreviousClosePacket> _pendingPreviousCloseUpdates = new();
-        // ----------------------------------------------------
 
         private bool _isKillSwitchActive;
         public bool IsKillSwitchActive
@@ -94,7 +91,7 @@ namespace TradingConsole.Wpf.ViewModels
         public SettingsViewModel Settings { get; }
         public AnalysisTabViewModel AnalysisTab { get; }
         public TradeSignalViewModel TradeSignalTab { get; }
-        public string DhanClientId => _dhanClientId; // Expose DhanClientId for AutoTraderService
+        public string DhanClientId => _dhanClientId;
 
         public ObservableCollection<OptionChainRow> OptionChainRows { get; }
         public ObservableCollection<TickerIndex> Indices { get; }
@@ -205,10 +202,9 @@ namespace TradingConsole.Wpf.ViewModels
 
             _analysisService = new AnalysisService(Settings, _apiClient, _scripMasterService, _historicalIvService, _marketProfileService, _indicatorStateService, _signalLoggerService, _notificationService, Dashboard);
 
-            // --- MODIFIED: Subscribe the AutoTraderService to the analysis updates ---
             _autoTraderService = new AutoTraderService(this, _scripMasterService, _apiClient, Settings, _notificationService);
             _analysisService.OnAnalysisUpdated += OnAnalysisResultUpdated;
-            _analysisService.OnAnalysisUpdated += _autoTraderService.OnAnalysisResultReceived; // Subscribe AutoTrader
+            _analysisService.OnAnalysisUpdated += _autoTraderService.OnAnalysisResultReceived;
 
             Dashboard.MonitoredInstruments.CollectionChanged += (s, e) => RebuildDashboardMap();
             Portfolio.OpenPositions.CollectionChanged += (s, e) => RebuildPositionsMap();
@@ -245,7 +241,6 @@ namespace TradingConsole.Wpf.ViewModels
             RemoveInstrumentCommand = new RelayCommand(async p => await ExecuteRemoveInstrumentAsync(p));
             ShowMtmGraphCommand = new RelayCommand(ExecuteShowMtmGraph);
 
-            // --- PERFORMANCE OPTIMIZATION: Initialize the UI update timer ---
             _uiUpdateTimer = new Timer(ProcessPendingUiUpdates, null, Timeout.Infinite, Timeout.Infinite);
 
             _ = LoadDataOnStartupAsync();
@@ -721,6 +716,9 @@ namespace TradingConsole.Wpf.ViewModels
                 await InitializeDashboardAsync();
                 await PreloadNearestExpiriesAsync();
 
+                // --- BUG FIX: Pass the preloaded expiry dates to the Analysis Service ---
+                _analysisService.SetNearestExpiryDates(_nearestExpiryDates);
+
                 _ = Task.Run(LoadInitialOptionChainsAsync);
 
                 await UpdateSubscriptionsAsync();
@@ -731,7 +729,6 @@ namespace TradingConsole.Wpf.ViewModels
                 _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
                 _ivRefreshTimer = new Timer(async _ => await LoadInitialOptionChainsAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
-                // --- PERFORMANCE OPTIMIZATION: Start the UI update timer ---
                 _uiUpdateTimer.Change(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(200));
 
 
@@ -924,7 +921,6 @@ namespace TradingConsole.Wpf.ViewModels
             };
         }
 
-        // --- PERFORMANCE OPTIMIZATION: Buffer updates instead of dispatching immediately ---
         private void OnLtpUpdateReceived(TickerPacket packet)
         {
             if (packet?.SecurityId != null)
@@ -956,7 +952,6 @@ namespace TradingConsole.Wpf.ViewModels
                 _pendingOiUpdates[packet.SecurityId] = packet;
             }
         }
-        // ---------------------------------------------------------------------------------
 
         private void OnOrderUpdateReceived(OrderBookEntry updatedOrder)
         {
@@ -985,10 +980,8 @@ namespace TradingConsole.Wpf.ViewModels
             });
         }
 
-        // --- PERFORMANCE OPTIMIZATION: Process all buffered UI updates in a single batch ---
         private void ProcessPendingUiUpdates(object? state)
         {
-            // Atomically get the current batch of updates and clear the buffers for the next interval.
             var tickerUpdates = _pendingTickerUpdates.Values.ToList();
             _pendingTickerUpdates.Clear();
 
@@ -1001,13 +994,11 @@ namespace TradingConsole.Wpf.ViewModels
             var prevCloseUpdates = _pendingPreviousCloseUpdates.Values.ToList();
             _pendingPreviousCloseUpdates.Clear();
 
-            // If there's nothing to update, just return.
             if (!tickerUpdates.Any() && !quoteUpdates.Any() && !oiUpdates.Any() && !prevCloseUpdates.Any())
             {
                 return;
             }
 
-            // Dispatch a single operation to the UI thread to process the entire batch.
             Application.Current?.Dispatcher.InvokeAsync(() =>
             {
                 foreach (var packet in tickerUpdates)
@@ -1054,7 +1045,6 @@ namespace TradingConsole.Wpf.ViewModels
                             instrumentToUpdate.ImpliedVolatility = cachedOptionData.ImpliedVolatility;
                         }
 
-                        // --- CORRECTED LOGIC START ---
                         decimal underlyingLtp = 0;
                         if (instrumentToUpdate.InstrumentType.StartsWith("OPT") || instrumentToUpdate.InstrumentType.StartsWith("FUT"))
                         {
@@ -1064,7 +1054,7 @@ namespace TradingConsole.Wpf.ViewModels
                                 underlyingLtp = underlyingInstrument.LTP;
                             }
                         }
-                        else // For stocks and indices
+                        else
                         {
                             underlyingLtp = instrumentToUpdate.LTP;
                         }
@@ -1073,7 +1063,6 @@ namespace TradingConsole.Wpf.ViewModels
                         {
                             _analysisService.OnInstrumentDataReceived(instrumentToUpdate, underlyingLtp);
                         }
-                        // --- CORRECTED LOGIC END ---
 
 
                         if (SelectedIndex != null && SelectedIndex.ScripId == packet.SecurityId)
@@ -1114,8 +1103,6 @@ namespace TradingConsole.Wpf.ViewModels
                 }
             });
         }
-        // ---------------------------------------------------------------------------------
-
 
         public async Task LoadPortfolioAsync()
         {
@@ -1399,7 +1386,7 @@ namespace TradingConsole.Wpf.ViewModels
                     {
                         var inst = new DashboardInstrument
                         {
-                            Symbol = peInfo.SemInstrumentName,
+                            Symbol = ceInfo.SemInstrumentName,
                             DisplayName = ceInfo.SemInstrumentName,
                             SecurityId = peInfo.SecurityId,
                             FeedType = FeedTypeQuote,
@@ -1509,17 +1496,14 @@ namespace TradingConsole.Wpf.ViewModels
                     }
                 }
 
-                // --- CORRECTED LOGIC START ---
                 await Application.Current.Dispatcher.InvokeAsync(() => {
                     foreach (var instrument in Dashboard.MonitoredInstruments)
                     {
-                        // This block handles options specifically to add IV data
                         if (_optionChainCache.TryGetValue(instrument.SecurityId, out var cachedData))
                         {
                             instrument.ImpliedVolatility = cachedData.ImpliedVolatility;
                         }
 
-                        // This block sends data for analysis for ALL instrument types
                         decimal underlyingLtp = 0;
                         if (instrument.InstrumentType.StartsWith("OPT") || instrument.InstrumentType.StartsWith("FUT"))
                         {
@@ -1529,7 +1513,7 @@ namespace TradingConsole.Wpf.ViewModels
                                 underlyingLtp = underlyingInstrument.LTP;
                             }
                         }
-                        else // For EQ and INDEX
+                        else
                         {
                             underlyingLtp = instrument.LTP;
                         }
@@ -1540,7 +1524,6 @@ namespace TradingConsole.Wpf.ViewModels
                         }
                     }
                 });
-                // --- CORRECTED LOGIC END ---
 
                 await UpdateStatusAsync("IV cache refresh complete.");
             }
@@ -1715,7 +1698,6 @@ namespace TradingConsole.Wpf.ViewModels
             _openPositionsMap = Portfolio.OpenPositions.ToDictionary(p => p.SecurityId);
         }
 
-        // --- NEW HELPER METHOD ---
         private DashboardInstrument? FindUnderlyingInstrument(DashboardInstrument derivative)
         {
             return Dashboard.MonitoredInstruments.FirstOrDefault(i =>
@@ -1726,12 +1708,10 @@ namespace TradingConsole.Wpf.ViewModels
                 var derivativeUnderlying = derivative.UnderlyingSymbol.ToUpperInvariant();
                 var potentialUnderlyingSymbol = i.Symbol.ToUpperInvariant();
 
-                // Explicit mapping for known indices
                 if (potentialUnderlyingSymbol == "NIFTY 50" && derivativeUnderlying == "NIFTY") return true;
                 if (potentialUnderlyingSymbol == "NIFTY BANK" && derivativeUnderlying == "BANKNIFTY") return true;
                 if (potentialUnderlyingSymbol == "SENSEX" && derivativeUnderlying == "SENSEX") return true;
 
-                // Fallback for stocks (e.g., RELIANCE future should match RELIANCE stock)
                 return potentialUnderlyingSymbol == derivativeUnderlying;
             });
         }
@@ -1751,7 +1731,7 @@ namespace TradingConsole.Wpf.ViewModels
             _ivRefreshTimer?.Dispose();
             _optionChainLoadSemaphore?.Dispose();
             _ivCacheSemaphore?.Dispose();
-            _uiUpdateTimer?.Dispose(); // --- PERFORMANCE OPTIMIZATION: Dispose the timer ---
+            _uiUpdateTimer?.Dispose();
 
             _performanceService?.Cleanup();
 

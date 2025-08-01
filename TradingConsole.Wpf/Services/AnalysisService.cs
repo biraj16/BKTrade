@@ -13,12 +13,30 @@ using TradingConsole.Wpf.ViewModels;
 
 namespace TradingConsole.Wpf.Services
 {
-    public enum IntradayContext
+    // --- MAGA REFACTOR: Renamed for clarity ---
+    public enum MarketThesis
     {
-        Trending,
-        RangeBound,
-        Breakout,
-        Volatile,
+        // Bullish Theses
+        Bullish_Trend,
+        Bullish_Rotation,
+        Bullish_Reversal_Attempt,
+
+        // Bearish Theses
+        Bearish_Trend,
+        Bearish_Rotation,
+        Bearish_Reversal_Attempt,
+
+        // Neutral / Balancing Theses
+        Balancing,
+        Indeterminate
+    }
+
+    // --- MAGA REFACTOR: New enum to determine who is in control ---
+    public enum DominantPlayer
+    {
+        Buyers,
+        Sellers,
+        Balance,
         Indeterminate
     }
 
@@ -44,9 +62,10 @@ namespace TradingConsole.Wpf.Services
 
         private readonly Dictionary<string, DashboardInstrument> _instrumentCache = new();
         private readonly Dictionary<string, RelativeStrengthState> _relativeStrengthStates = new();
-        private readonly Dictionary<string, IvSkewState> _ivSkewStates = new(); // ADDED
-        // --- ADDED: Store nearest expiry dates for reliable lookups ---
+        private readonly Dictionary<string, IvSkewState> _ivSkewStates = new();
         private readonly Dictionary<string, DateTime> _nearestExpiryDates = new();
+        // --- ADDED: Dictionary to track the last signal time to prevent flapping ---
+        private readonly Dictionary<string, DateTime> _lastSignalTime = new Dictionary<string, DateTime>();
 
 
         public int ShortEmaLength { get; set; }
@@ -100,7 +119,6 @@ namespace TradingConsole.Wpf.Services
             UpdateParametersFromSettings();
         }
 
-        // --- ADDED: Method to receive expiry dates from MainViewModel ---
         public void SetNearestExpiryDates(Dictionary<string, string> expiryDates)
         {
             foreach (var kvp in expiryDates)
@@ -231,7 +249,7 @@ namespace TradingConsole.Wpf.Services
                 if (instrument.InstrumentType == "INDEX")
                 {
                     _relativeStrengthStates[instrument.SecurityId] = new RelativeStrengthState();
-                    _ivSkewStates[instrument.SecurityId] = new IvSkewState(); // ADDED
+                    _ivSkewStates[instrument.SecurityId] = new IvSkewState();
                 }
 
                 _historicalMarketProfiles[instrument.SecurityId] = _marketProfileService.GetHistoricalProfiles(instrument.SecurityId);
@@ -256,10 +274,11 @@ namespace TradingConsole.Wpf.Services
 
                     if (savedState != null)
                     {
-                        priceEmaState.CurrentShortEma = savedState.LastShortEma;
-                        priceEmaState.CurrentLongEma = savedState.LastLongEma;
-                        vwapEmaState.CurrentShortEma = savedState.LastVwapShortEma;
-                        vwapEmaState.CurrentLongEma = savedState.LastVwapLongEma;
+                        // We no longer load EMA state to prevent stale data issues.
+                        // priceEmaState.CurrentShortEma = savedState.LastShortEma;
+                        // priceEmaState.CurrentLongEma = savedState.LastLongEma;
+                        // vwapEmaState.CurrentShortEma = savedState.LastVwapShortEma;
+                        // vwapEmaState.CurrentLongEma = savedState.LastVwapLongEma;
                         rsiState.AvgGain = savedState.LastRsiAvgGain;
                         rsiState.AvgLoss = savedState.LastRsiAvgLoss;
                         atrState.CurrentAtr = savedState.LastAtr;
@@ -328,7 +347,6 @@ namespace TradingConsole.Wpf.Services
 
             if (future == null || future.LTP == 0 || spotIndex.LTP == 0) return "Futures Not Found";
 
-            // --- CORRECTED LOGIC: Calculate the true basis (Future Price - Spot Price) ---
             decimal basis = future.LTP - spotIndex.LTP;
 
             state.BasisDeltaHistory.Add(basis);
@@ -337,7 +355,6 @@ namespace TradingConsole.Wpf.Services
                 state.BasisDeltaHistory.RemoveAt(0);
             }
 
-            // Analyze the trend of the basis history
             string basisTrend = CalculateTrend(state.BasisDeltaHistory, 30);
 
             string confirmation = "";
@@ -382,10 +399,15 @@ namespace TradingConsole.Wpf.Services
 
         private async Task BackfillAndSavePreviousDayProfileAsync(DashboardInstrument instrument)
         {
+            if (instrument.InstrumentType != "INDEX" && instrument.InstrumentType != "FUTIDX")
+            {
+                Debug.WriteLine($"[BackfillPrevDay] Skipping for {instrument.DisplayName} because it is an {instrument.InstrumentType}.");
+                return;
+            }
+
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
             var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
 
-            // Only run this process if the market isn't open yet.
             if (istNow.TimeOfDay >= new TimeSpan(9, 15, 0))
             {
                 Debug.WriteLine($"[BackfillPrevDay] Skipping for {instrument.DisplayName}, market is open.");
@@ -394,7 +416,6 @@ namespace TradingConsole.Wpf.Services
 
             DateTime dateToFetch = GetPreviousTradingDay(istNow);
 
-            // Check if we already have a profile for this instrument on the target date.
             if (_historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.Any(p => p.Date.Date == dateToFetch.Date) == true)
             {
                 Debug.WriteLine($"[BackfillPrevDay] Profile for {instrument.DisplayName} on {dateToFetch:yyyy-MM-dd} already exists. Skipping fetch.");
@@ -412,7 +433,6 @@ namespace TradingConsole.Wpf.Services
                     return;
                 }
 
-                // Default to using the instrument's own data unless it's a spot index.
                 var volumeScripInfo = priceScripInfo;
 
                 if (instrument.InstrumentType == "INDEX")
@@ -490,9 +510,6 @@ namespace TradingConsole.Wpf.Services
             }
         }
 
-        // ====================================================================================================
-        // === MODIFICATION START: This function is now corrected to use the hybrid profile logic for indices ===
-        // ====================================================================================================
         private async Task BackfillCurrentDayCandlesAsync(DashboardInstrument instrument)
         {
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
@@ -504,7 +521,6 @@ namespace TradingConsole.Wpf.Services
 
             try
             {
-                // This logic mirrors the fix in BackfillAndSavePreviousDayProfileAsync
                 var priceScripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
                 if (priceScripInfo == null) return;
 
@@ -557,20 +573,16 @@ namespace TradingConsole.Wpf.Services
                             OpenInterest = volumeHistoricalData.OpenInterest.Count > i ? (long)volumeHistoricalData.OpenInterest[i] : 0,
                         };
 
-                        // *** THIS IS THE FIX: Use the hybrid update method ***
                         UpdateMarketProfile(liveProfile, priceCandle, volumeCandle);
 
-                        // Also add the full candle data for other indicator calculations
                         priceCandle.Volume = volumeCandle.Volume;
                         priceCandle.OpenInterest = volumeCandle.OpenInterest;
                         candles.Add(priceCandle);
                     }
 
-                    // After processing all candles, finalize the profile calculation for display
                     CalculateDevelopingProfileLevels(liveProfile);
                 }
 
-                // Aggregate the backfilled candles for multi-timeframe analysis
                 foreach (var timeframe in _timeframes)
                 {
                     var aggregatedCandles = AggregateHistoricalCandles(candles, timeframe);
@@ -582,9 +594,6 @@ namespace TradingConsole.Wpf.Services
                 Debug.WriteLine($"[BackfillCurrentDay] ERROR: {ex.Message}");
             }
         }
-        // ==================================================================================================
-        // === MODIFICATION END                                                                           ===
-        // ==================================================================================================
 
         #region Market Profile (TPO) and Volume Profile Calculation
 
@@ -1063,7 +1072,6 @@ namespace TradingConsole.Wpf.Services
                 {
                     if (timeframe.TotalMinutes == 1)
                     {
-                        // --- NEW HYBRID PROFILE LOGIC ---
                         if (instrument.InstrumentType == "FUTIDX")
                         {
                             var underlyingIndex = _instrumentCache.Values.FirstOrDefault(i => i.InstrumentType == "INDEX" && i.Symbol == instrument.UnderlyingSymbol);
@@ -1073,16 +1081,13 @@ namespace TradingConsole.Wpf.Services
                                 var matchingIndexCandle = indexCandles?.FirstOrDefault(c => c.Timestamp == lastClosedCandle.Timestamp);
                                 if (matchingIndexCandle != null && _marketProfiles.TryGetValue(underlyingIndex.SecurityId, out var profile))
                                 {
-                                    // Use index for price, future for volume
                                     UpdateMarketProfile(profile, matchingIndexCandle, lastClosedCandle);
-                                    // *** ADDED THE MISSING CALCULATION CALL ***
                                     CalculateDevelopingProfileLevels(profile);
                                 }
                             }
                         }
                         else if (instrument.InstrumentType != "INDEX")
                         {
-                            // For non-index instruments, use their own data for both price and volume
                             UpdateMarketProfile(instrument.SecurityId, lastClosedCandle);
                         }
                     }
@@ -1289,7 +1294,6 @@ namespace TradingConsole.Wpf.Services
             OnAnalysisUpdated?.Invoke(result);
         }
 
-        // --- FIX START: This method now correctly maps the index name to the scrip master symbol ---
         private void RunIvSkewAnalysis(DashboardInstrument indexInstrument)
         {
             if (!_ivSkewStates.ContainsKey(indexInstrument.SecurityId)) return;
@@ -1305,19 +1309,18 @@ namespace TradingConsole.Wpf.Services
             int strikeStep = GetStrikePriceStep(indexInstrument.Symbol);
             decimal atmStrike = Math.Round(indexInstrument.LTP / strikeStep) * strikeStep;
 
-            // *** THIS IS THE FIX: Get the correct underlying symbol for the lookup ***
             string underlyingForLookup = GetUnderlyingSymbolForScripMaster(indexInstrument.Symbol);
 
             var atmCall = _instrumentCache.Values.FirstOrDefault(i =>
                 i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == underlyingForLookup && // Use the corrected symbol
+                i.UnderlyingSymbol == underlyingForLookup &&
                 i.OptionType == "CE" &&
                 i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
                 i.StrikePrice == atmStrike);
 
             var atmPut = _instrumentCache.Values.FirstOrDefault(i =>
                 i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == underlyingForLookup && // Use the corrected symbol
+                i.UnderlyingSymbol == underlyingForLookup &&
                 i.OptionType == "PE" &&
                 i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
                 i.StrikePrice == atmStrike);
@@ -1384,51 +1387,76 @@ namespace TradingConsole.Wpf.Services
 
             result.IvSkewSignal = "Neutral";
         }
-        // --- FIX END ---
 
+        // --- MAGA REFACTOR: This method is now obsolete and replaced by the Thesis model ---
+        //private IntradayContext DetermineIntradayContext(AnalysisResult result) { ... }
 
-        private IntradayContext DetermineIntradayContext(AnalysisResult result)
+        // --- MAGA REFACTOR: The new brain of the operation ---
+        private MarketThesis UpdateIntradayThesis(AnalysisResult result)
         {
-            bool isTrendingOnEma = result.EmaSignal15Min.Contains("Cross") && result.EmaSignal5Min == result.EmaSignal15Min;
-            bool isBreakoutOnIb = result.InitialBalanceSignal.Contains("Extension");
-            bool isVolatileOnAtr = result.AtrSignal5Min == "Vol Expanding" || result.AtrSignal1Min == "Vol Expanding";
-            bool isInsideIb = result.InitialBalanceSignal == "Inside IB";
+            // Step 1: Determine the long-term structural bias from Market Profile
+            bool isStructurallyBullish = result.MarketStructure == "Trending Up";
+            bool isStructurallyBearish = result.MarketStructure == "Trending Down";
+            bool isBalancing = result.MarketStructure == "Balancing";
 
-            if (isBreakoutOnIb)
+            // Step 2: Determine the current dominant player based on short-term evidence
+            DominantPlayer player = DominantPlayer.Indeterminate;
+            int buyerEvidence = 0;
+            int sellerEvidence = 0;
+
+            if (result.PriceVsVwapSignal == "Above VWAP") buyerEvidence++;
+            if (result.PriceVsVwapSignal == "Below VWAP") sellerEvidence++;
+            if (result.EmaSignal5Min == "Bullish Cross") buyerEvidence++;
+            if (result.EmaSignal5Min == "Bearish Cross") sellerEvidence++;
+            if (result.OiSignal == "Long Buildup") buyerEvidence++;
+            if (result.OiSignal == "Short Buildup") sellerEvidence++;
+            if (result.VolumeSignal == "Volume Burst" && result.LTP > result.Vwap) buyerEvidence++;
+            if (result.VolumeSignal == "Volume Burst" && result.LTP < result.Vwap) sellerEvidence++;
+
+            if (buyerEvidence > sellerEvidence + 1) player = DominantPlayer.Buyers;
+            else if (sellerEvidence > buyerEvidence + 1) player = DominantPlayer.Sellers;
+            else player = DominantPlayer.Balance;
+
+            result.DominantPlayer = player; // Store for UI display
+
+            // Step 3: Synthesize the final thesis
+            if (isStructurallyBullish)
             {
-                return isVolatileOnAtr ? IntradayContext.Breakout : IntradayContext.Trending;
+                if (player == DominantPlayer.Buyers) return MarketThesis.Bullish_Trend;
+                if (player == DominantPlayer.Sellers) return MarketThesis.Bullish_Rotation; // A pullback in a larger uptrend
+                return MarketThesis.Bullish_Trend; // Default to trend continuation
             }
 
-            if (isVolatileOnAtr)
+            if (isStructurallyBearish)
             {
-                return IntradayContext.Volatile;
+                if (player == DominantPlayer.Sellers) return MarketThesis.Bearish_Trend;
+                if (player == DominantPlayer.Buyers) return MarketThesis.Bearish_Rotation; // A rally in a larger downtrend
+                return MarketThesis.Bearish_Trend; // Default to trend continuation
             }
 
-            if (isTrendingOnEma && !isInsideIb)
+            if (isBalancing)
             {
-                return IntradayContext.Trending;
+                if (result.MarketProfileSignal == "Look Above and Fail at Y-VAH") return MarketThesis.Bearish_Reversal_Attempt;
+                if (result.MarketProfileSignal == "Look Below and Fail at Y-VAL") return MarketThesis.Bullish_Reversal_Attempt;
+                return MarketThesis.Balancing;
             }
 
-            if (isInsideIb && !isTrendingOnEma && !isVolatileOnAtr)
-            {
-                return IntradayContext.RangeBound;
-            }
-
-            return IntradayContext.Indeterminate;
+            return MarketThesis.Indeterminate;
         }
+
 
         private void SynthesizeTradeSignal(AnalysisResult result)
         {
-            // --- FIX #1: Only run signal synthesis for Indices ---
             if (result.InstrumentGroup != "Indices")
             {
                 return;
             }
 
-            var context = DetermineIntradayContext(result);
-            result.IntradayContext = context;
+            // --- MAGA REFACTOR: The thesis is now the primary driver ---
+            MarketThesis thesis = UpdateIntradayThesis(result);
+            result.MarketThesis = thesis;
 
-            var (bullDrivers, bearDrivers, conviction) = CalculateConvictionScore(result, context);
+            var (bullDrivers, bearDrivers, conviction) = CalculateConvictionScore(result, thesis);
             result.BullishDrivers = bullDrivers;
             result.BearishDrivers = bearDrivers;
             result.ConvictionScore = conviction;
@@ -1440,7 +1468,6 @@ namespace TradingConsole.Wpf.Services
             else if (conviction <= -3) playbook = "Moderate Bearish Conviction";
             else playbook = "Neutral / Observe";
 
-            // --- FIX #2: Use a more stable signal for notifications ---
             string newPrimarySignal;
             if (conviction >= 3) newPrimarySignal = "Bullish";
             else if (conviction <= -3) newPrimarySignal = "Bearish";
@@ -1451,34 +1478,48 @@ namespace TradingConsole.Wpf.Services
             result.FinalTradeSignal = playbook;
             result.MarketNarrative = GenerateMarketNarrative(result);
 
-            // --- MODIFIED: Change the notification condition to include exits ---
             if (result.PrimarySignal != oldPrimarySignal)
             {
+                if (_lastSignalTime.TryGetValue(result.SecurityId, out var lastTime) && (DateTime.UtcNow - lastTime).TotalSeconds < 60)
+                {
+                    return;
+                }
+                _lastSignalTime[result.SecurityId] = DateTime.UtcNow;
+
                 _signalLoggerService.LogSignal(result);
-                // Pass the old signal to the notification service
                 Task.Run(() => _notificationService.SendTelegramSignalAsync(result, oldPrimarySignal));
             }
         }
 
-        private (List<string> BullishDrivers, List<string> BearishDrivers, int Score) CalculateConvictionScore(AnalysisResult r, IntradayContext context)
+        // --- MAGA REFACTOR: Score calculation is now driven by the Thesis ---
+        private (List<string> BullishDrivers, List<string> BearishDrivers, int Score) CalculateConvictionScore(AnalysisResult r, MarketThesis thesis)
         {
             var bullDrivers = new List<SignalDriver>();
             var bearDrivers = new List<SignalDriver>();
 
-            switch (context)
+            switch (thesis)
             {
-                case IntradayContext.Trending:
-                case IntradayContext.Breakout:
-                    bullDrivers = _settingsViewModel.Strategy.TrendingBullDrivers.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.TrendingBearDrivers.Where(d => d.IsEnabled).ToList();
+                case MarketThesis.Bullish_Trend:
+                case MarketThesis.Bullish_Rotation: // In a pullback, we still look for trend continuation signals
+                    bullDrivers = _settingsViewModel.Strategy.TrendContinuation_Bullish.Where(d => d.IsEnabled).ToList();
+                    bearDrivers = _settingsViewModel.Strategy.TrendContinuation_Bearish.Where(d => d.IsEnabled).ToList();
                     break;
-                case IntradayContext.RangeBound:
-                    bullDrivers = _settingsViewModel.Strategy.RangeBoundBullishDrivers.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.RangeBoundBearishDrivers.Where(d => d.IsEnabled).ToList();
+                case MarketThesis.Bearish_Trend:
+                case MarketThesis.Bearish_Rotation: // In a rally, we still look for trend continuation signals
+                    bullDrivers = _settingsViewModel.Strategy.TrendContinuation_Bullish.Where(d => d.IsEnabled).ToList();
+                    bearDrivers = _settingsViewModel.Strategy.TrendContinuation_Bearish.Where(d => d.IsEnabled).ToList();
                     break;
-                case IntradayContext.Volatile:
-                    bullDrivers = _settingsViewModel.Strategy.VolatileBullishDrivers.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.VolatileBearishDrivers.Where(d => d.IsEnabled).ToList();
+                case MarketThesis.Balancing:
+                    bullDrivers = _settingsViewModel.Strategy.MeanReversion_Bullish.Where(d => d.IsEnabled).ToList();
+                    bearDrivers = _settingsViewModel.Strategy.MeanReversion_Bearish.Where(d => d.IsEnabled).ToList();
+                    break;
+                case MarketThesis.Bullish_Reversal_Attempt:
+                    bullDrivers = _settingsViewModel.Strategy.Reversal_Bullish.Where(d => d.IsEnabled).ToList();
+                    bearDrivers = new List<SignalDriver>(); // Ignore bearish signals during a reversal attempt
+                    break;
+                case MarketThesis.Bearish_Reversal_Attempt:
+                    bullDrivers = new List<SignalDriver>(); // Ignore bullish signals
+                    bearDrivers = _settingsViewModel.Strategy.Reversal_Bearish.Where(d => d.IsEnabled).ToList();
                     break;
             }
 
@@ -1536,25 +1577,24 @@ namespace TradingConsole.Wpf.Services
             bool atSupport = r.DayRangeSignal == "Near Low" || r.VwapBandSignal == "At Lower Band" || r.MarketProfileSignal.Contains("VAL");
             bool atResistance = r.DayRangeSignal == "Near High" || r.VwapBandSignal == "At Upper Band" || r.MarketProfileSignal.Contains("VAH");
             bool volumeConfirmed = r.VolumeSignal == "Volume Burst";
+            bool isNotInStrongTrend = r.MarketThesis != MarketThesis.Bullish_Trend && r.MarketThesis != MarketThesis.Bearish_Trend;
+
             switch (driverName)
             {
-                // --- NEW: Intelligent IV Skew Drivers ---
                 case "Bullish IV Momentum": return r.IvSkewSignal == "Bullish IV Momentum";
                 case "Bearish IV Momentum": return r.IvSkewSignal == "Bearish IV Momentum";
                 case "Range Contraction": return r.IvSkewSignal == "Range Contraction";
-                case "Bullish Skew Divergence (Full)": return r.IvSkewSignal == "Bullish Skew Divergence (Full)";
-                case "Bullish Skew Divergence (Partial)": return r.IvSkewSignal == "Bullish Skew Divergence (Partial)";
-                case "Bearish Skew Divergence (Full)": return r.IvSkewSignal == "Bearish Skew Divergence (Full)";
-                case "Bearish Skew Divergence (Partial)": return r.IvSkewSignal == "Bearish Skew Divergence (Partial)";
+                case "Bullish Skew Divergence (Full)": return r.IvSkewSignal == "Bullish Skew Divergence (Full)" && isNotInStrongTrend;
+                case "Bullish Skew Divergence (Partial)": return r.IvSkewSignal == "Bullish Skew Divergence (Partial)" && isNotInStrongTrend;
+                case "Bearish Skew Divergence (Full)": return r.IvSkewSignal == "Bearish Skew Divergence (Full)" && isNotInStrongTrend;
+                case "Bearish Skew Divergence (Partial)": return r.IvSkewSignal == "Bearish Skew Divergence (Partial)" && isNotInStrongTrend;
 
-                // Contextual Candlestick Drivers
                 case "Bullish Pattern at Key Support": return isBullishPattern && atSupport;
                 case "Bearish Pattern at Key Resistance": return isBearishPattern && atResistance;
                 case "Bullish Pattern with Volume Confirmation": return isBullishPattern && volumeConfirmed;
                 case "Bearish Pattern with Volume Confirmation": return isBearishPattern && volumeConfirmed;
                 case "Bullish Pattern (Unconfirmed)": return isBullishPattern && !atSupport && !volumeConfirmed;
                 case "Bearish Pattern (Unconfirmed)": return isBearishPattern && !atResistance && !volumeConfirmed;
-                // Market Structure Drivers
                 case "True Acceptance Above Y-VAH": return r.MarketProfileSignal == "True Acceptance Above Y-VAH";
                 case "Look Below and Fail at Y-VAL": return r.MarketProfileSignal == "Look Below and Fail at Y-VAL";
                 case "Initiative Buying Above Y-VAH": return r.MarketProfileSignal == "Initiative Buying Above Y-VAH";
@@ -1562,85 +1602,59 @@ namespace TradingConsole.Wpf.Services
                 case "Look Above and Fail at Y-VAH": return r.MarketProfileSignal == "Look Above and Fail at Y-VAH";
                 case "Initiative Selling Below Y-VAL": return r.MarketProfileSignal == "Initiative Selling Below Y-VAL";
 
-                // Trending Bull Drivers
                 case "Institutional Intent is Bullish": return r.InstitutionalIntent.Contains("Bullish");
                 case "Price above VWAP": return r.PriceVsVwapSignal == "Above VWAP";
                 case "5m VWAP EMA confirms bullish trend": return r.VwapEmaSignal5Min == "Bullish Cross";
                 case "OI confirms new longs": return r.OiSignal == "Long Buildup";
                 case "IB breakout is extending": return r.InitialBalanceSignal == "IB Extension Up";
-                case "Bullish OBV Div at Profile Support": return r.ObvDivergenceSignal5Min.Contains("Bullish") && (r.MarketProfileSignal.Contains("dVAL") || r.MarketProfileSignal.Contains("Y-VAL"));
-                case "Bullish RSI Div at Profile Support": return r.RsiSignal5Min.Contains("Bullish") && (r.MarketProfileSignal.Contains("dVAL") || r.MarketProfileSignal.Contains("Y-VAL"));
+                case "Bullish OBV Div at Profile Support": return r.ObvDivergenceSignal5Min.Contains("Bullish") && atSupport && isNotInStrongTrend;
+                case "Bullish RSI Div at Profile Support": return r.RsiSignal5Min.Contains("Bullish") && atSupport && isNotInStrongTrend;
 
-                // Trending Bear Drivers
                 case "Institutional Intent is Bearish": return r.InstitutionalIntent.Contains("Bearish");
                 case "Price below VWAP": return r.PriceVsVwapSignal == "Below VWAP";
                 case "5m VWAP EMA confirms bearish trend": return r.VwapEmaSignal5Min == "Bearish Cross";
                 case "OI confirms new shorts": return r.OiSignal == "Short Buildup";
                 case "IB breakdown is extending": return r.InitialBalanceSignal == "IB Extension Down";
-                case "Bearish OBV Div at Profile Resistance": return r.ObvDivergenceSignal5Min.Contains("Bearish") && (r.MarketProfileSignal.Contains("dVAH") || r.MarketProfileSignal.Contains("Y-VAH"));
-                case "Bearish RSI Div at Profile Resistance": return r.RsiSignal5Min.Contains("Bearish") && (r.MarketProfileSignal.Contains("dVAH") || r.MarketProfileSignal.Contains("Y-VAH"));
+                case "Bearish OBV Div at Profile Resistance": return r.ObvDivergenceSignal5Min.Contains("Bearish") && atResistance && isNotInStrongTrend;
+                case "Bearish RSI Div at Profile Resistance": return r.RsiSignal5Min.Contains("Bearish") && atResistance && isNotInStrongTrend;
 
-                // Range Bound Bullish Drivers
                 case "Bullish OBV Div at range low": return r.ObvDivergenceSignal5Min.Contains("Bullish") && r.VwapBandSignal == "At Lower Band";
                 case "Bullish RSI Div at range low": return r.RsiSignal5Min.Contains("Bullish") && r.VwapBandSignal == "At Lower Band";
                 case "Low volume suggests exhaustion (Bullish)": return r.VolumeSignal != "Volume Burst" && r.AtrSignal5Min == "Vol Contracting" && r.DayRangeSignal == "Near Low";
                 case "Possible range breakout with volume": return r.DayRangeSignal == "Near High" && r.VolumeSignal == "Volume Burst";
 
-                // Range Bound Bearish Drivers
                 case "Bearish OBV Div at range high": return r.ObvDivergenceSignal5Min.Contains("Bearish") && r.VwapBandSignal == "At Upper Band";
                 case "Bearish RSI Div at range high": return r.RsiSignal5Min.Contains("Bearish") && r.VwapBandSignal == "At Upper Band";
                 case "Low volume suggests exhaustion (Bearish)": return r.VolumeSignal != "Volume Burst" && r.AtrSignal5Min == "Vol Contracting" && r.DayRangeSignal == "Near High";
                 case "Possible range breakdown with volume": return r.DayRangeSignal == "Near Low" && r.VolumeSignal == "Volume Burst";
 
-                // Volatile Bullish Drivers
                 case "Strong bullish confluence with Inst. backing": return r.InstitutionalIntent.Contains("Bullish") && r.EmaSignal5Min == "Bullish Cross" && r.VolumeSignal == "Volume Burst";
 
-                // Volatile Bearish Drivers
                 case "Strong bearish confluence with Inst. backing": return r.InstitutionalIntent.Contains("Bearish") && r.EmaSignal5Min == "Bearish Cross" && r.VolumeSignal == "Volume Burst";
 
                 default: return false;
             }
         }
 
-
         private string GenerateMarketNarrative(AnalysisResult r)
         {
             var narrative = new List<string>();
-            narrative.Add($"Context: {r.IntradayContext}.");
+            narrative.Add($"Thesis: {r.MarketThesis}.");
+            narrative.Add($"Dominant Player: {r.DominantPlayer}.");
             narrative.Add($"Open: {r.OpenTypeSignal}.");
             narrative.Add($"vs Y-Value: {r.YesterdayProfileSignal}.");
             narrative.Add($"vs VWAP: {r.PriceVsVwapSignal}.");
 
-            if (r.IntradayContext == IntradayContext.Trending)
+            if (r.MarketThesis == MarketThesis.Bullish_Trend || r.MarketThesis == MarketThesis.Bearish_Trend)
             {
                 narrative.Add(r.EmaSignal15Min == "Bullish Cross" ? "Long-term trend is Up." : "Long-term trend is Down.");
             }
-            if (r.IntradayContext == IntradayContext.RangeBound)
+            if (r.MarketThesis == MarketThesis.Balancing)
             {
                 narrative.Add($"Price is between VWAP bands ({r.VwapLowerBand:N2} - {r.VwapUpperBand:N2}).");
             }
-            if (r.IntradayContext == IntradayContext.Breakout)
-            {
-                narrative.Add($"IB Signal: {r.InitialBalanceSignal} with {r.VolumeSignal}.");
-            }
 
             return string.Join(" ", narrative);
-        }
-
-        private decimal CalculateDashboardPcr(string underlyingSymbol)
-        {
-            var relevantOptions = _dashboardViewModel.MonitoredInstruments
-                .Where(i => i.UnderlyingSymbol == underlyingSymbol && i.InstrumentType == "OPTIDX")
-                .ToList();
-
-            if (!relevantOptions.Any()) return 0;
-
-            long totalCallOi = relevantOptions.Where(o => o.DisplayName.Contains("CALL")).Sum(o => o.OpenInterest);
-            long totalPutOi = relevantOptions.Where(o => o.DisplayName.Contains("PUT")).Sum(o => o.OpenInterest);
-
-            if (totalCallOi == 0) return 0;
-
-            return (decimal)totalPutOi / totalCallOi;
         }
 
         private void UpdateComprehensiveIndexSignal(AnalysisResult result)
@@ -1726,25 +1740,28 @@ namespace TradingConsole.Wpf.Services
 
             var timeframe = candles.Count > 1 ? (candles[1].Timestamp - candles[0].Timestamp) : TimeSpan.FromMinutes(1);
             var state = stateDictionary[securityId][timeframe];
-
-            Func<Candle, decimal> sourceSelector = useVwap ? (c => c.Vwap) : (c => c.Close);
-
+            Func<Candle, decimal> sourceSelector = useVwap ? c => c.Vwap : c => c.Close;
             var prices = candles.Select(sourceSelector).ToList();
-            if (prices.Count == 0) return "Building History...";
 
-            if (state.CurrentShortEma == 0 || state.CurrentLongEma == 0)
-            {
-                state.CurrentShortEma = prices.Skip(prices.Count - ShortEmaLength).Average();
-                state.CurrentLongEma = prices.Average();
-            }
-            else
-            {
-                decimal shortMultiplier = 2.0m / (ShortEmaLength + 1);
-                state.CurrentShortEma = ((prices.Last() - state.CurrentShortEma) * shortMultiplier) + state.CurrentShortEma;
+            // --- BUG FIX: This logic is now robust and recalculates the full EMA series ---
+            // This prevents state pollution from the previous day and ensures accuracy after backfill.
+            decimal shortMultiplier = 2.0m / (ShortEmaLength + 1);
+            decimal longMultiplier = 2.0m / (LongEmaLength + 1);
 
-                decimal longMultiplier = 2.0m / (LongEmaLength + 1);
-                state.CurrentLongEma = ((prices.Last() - state.CurrentLongEma) * longMultiplier) + state.CurrentLongEma;
+            decimal shortEma = prices.Take(ShortEmaLength).Average();
+            for (int i = ShortEmaLength; i < prices.Count; i++)
+            {
+                shortEma = (prices[i] - shortEma) * shortMultiplier + shortEma;
             }
+
+            decimal longEma = prices.Take(LongEmaLength).Average();
+            for (int i = LongEmaLength; i < prices.Count; i++)
+            {
+                longEma = (prices[i] - longEma) * longMultiplier + longEma;
+            }
+
+            state.CurrentShortEma = shortEma;
+            state.CurrentLongEma = longEma;
 
             if (state.CurrentShortEma > state.CurrentLongEma) return "Bullish Cross";
             if (state.CurrentShortEma < state.CurrentLongEma) return "Bearish Cross";
@@ -1753,7 +1770,6 @@ namespace TradingConsole.Wpf.Services
 
 
         #region Helper Calculation Methods
-        // --- ADDED: New helper method to get the correct symbol for scrip master lookups ---
         private string GetUnderlyingSymbolForScripMaster(string displayName)
         {
             return displayName switch
@@ -1765,7 +1781,6 @@ namespace TradingConsole.Wpf.Services
             };
         }
 
-        // --- ADDED: Helper method to get strike step for an index ---
         private int GetStrikePriceStep(string underlyingSymbol)
         {
             string upperSymbol = underlyingSymbol.ToUpperInvariant();

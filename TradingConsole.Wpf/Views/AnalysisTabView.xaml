@@ -27,7 +27,6 @@
 
         <TextBlock Grid.Row="0" Text="Real-time Analysis Engine" Margin="10" FontSize="18" FontWeight="Bold"/>
 
-        <!-- The DataGrid is now wrapped in an external ScrollViewer to ensure horizontal scrolling works correctly. -->
         <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <DataGrid ItemsSource="{Binding Source={StaticResource AnalysisResultsGrouped}}"
                       VirtualizingPanel.VirtualizationMode="Recycling"
@@ -91,7 +90,8 @@
                         </DataGridTextColumn.ElementStyle>
                     </DataGridTextColumn>
                     <DataGridTextColumn Header="Conviction" Binding="{Binding ConvictionScore}" Width="90"/>
-                    <DataGridTextColumn Header="Context" Binding="{Binding IntradayContext}" Width="120"/>
+                    <DataGridTextColumn Header="Market Thesis" Binding="{Binding MarketThesis}" Width="180" FontWeight="SemiBold"/>
+                    <DataGridTextColumn Header="Dominant Player" Binding="{Binding DominantPlayer}" Width="140"/>
                     <DataGridTextColumn Header="Narrative" Binding="{Binding MarketNarrative}" Width="350"/>
 
                     <!-- Market Structure Columns -->
@@ -121,7 +121,6 @@
                     <DataGridTextColumn Header="Structure (Multi-Day)" Binding="{Binding MarketStructure}" Width="160"/>
                     <DataGridTextColumn Header="vs Y-Profile" Binding="{Binding YesterdayProfileSignal}" Width="180"/>
                     <DataGridTextColumn Header="Institutional Intent" Binding="{Binding InstitutionalIntent}" Width="220"/>
-                    <!-- ADDED: New column for IV Skew Signal -->
                     <DataGridTextColumn Header="IV Skew Signal" Binding="{Binding IvSkewSignal}" Width="180"/>
 
                     <!-- Price Action Columns -->

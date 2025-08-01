@@ -91,14 +91,16 @@ namespace TradingConsole.Wpf.ViewModels
             VwapUpperBand = source.VwapUpperBand;
             VwapLowerBand = source.VwapLowerBand;
             AnchoredVwap = source.AnchoredVwap;
-            IntradayContext = source.IntradayContext;
             MarketNarrative = source.MarketNarrative;
             FinalTradeSignal = source.FinalTradeSignal;
-            PrimarySignal = source.PrimarySignal; // ADDED
+            PrimarySignal = source.PrimarySignal;
             ConvictionScore = source.ConvictionScore;
             BullishDrivers = source.BullishDrivers;
             BearishDrivers = source.BearishDrivers;
             IndexSignal = source.IndexSignal;
+            // --- MAGA REFACTOR: Update new thesis properties ---
+            MarketThesis = source.MarketThesis;
+            DominantPlayer = source.DominantPlayer;
         }
 
         private bool _isExpanded;
@@ -238,7 +240,6 @@ namespace TradingConsole.Wpf.ViewModels
         private string _finalTradeSignal = "Analyzing...";
         public string FinalTradeSignal { get => _finalTradeSignal; set => SetProperty(ref _finalTradeSignal, value); }
 
-        // --- ADDED: A more stable signal for notification purposes ---
         private string _primarySignal = "Neutral";
         public string PrimarySignal { get => _primarySignal; set => SetProperty(ref _primarySignal, value); }
 
@@ -270,14 +271,18 @@ namespace TradingConsole.Wpf.ViewModels
         private decimal _anchoredVwap;
         public decimal AnchoredVwap { get => _anchoredVwap; set => SetProperty(ref _anchoredVwap, value); }
 
-        private IntradayContext _intradayContext;
-        public IntradayContext IntradayContext { get => _intradayContext; set => SetProperty(ref _intradayContext, value); }
-
         private string _marketNarrative = "Analyzing...";
         public string MarketNarrative { get => _marketNarrative; set => SetProperty(ref _marketNarrative, value); }
 
         private IndexSignal _indexSignal = new IndexSignal();
         public IndexSignal IndexSignal { get => _indexSignal; set => SetProperty(ref _indexSignal, value); }
+
+        // --- MAGA REFACTOR: New properties for the Intraday Thesis ---
+        private MarketThesis _marketThesis = MarketThesis.Indeterminate;
+        public MarketThesis MarketThesis { get => _marketThesis; set => SetProperty(ref _marketThesis, value); }
+
+        private DominantPlayer _dominantPlayer = DominantPlayer.Indeterminate;
+        public DominantPlayer DominantPlayer { get => _dominantPlayer; set => SetProperty(ref _dominantPlayer, value); }
 
 
         public string FullGroupIdentifier
