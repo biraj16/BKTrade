@@ -1,5 +1,4 @@
-﻿// In TradingConsole.Wpf/Services/IndicatorStateService.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;

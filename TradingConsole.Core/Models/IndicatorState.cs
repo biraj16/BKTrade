@@ -9,10 +9,8 @@ namespace TradingConsole.Core.Models
     /// </summary>
     public class IndicatorState
     {
-        public decimal LastShortEma { get; set; }
-        public decimal LastLongEma { get; set; }
-        public decimal LastVwapShortEma { get; set; }
-        public decimal LastVwapLongEma { get; set; }
+        // --- FIX: Removed EMA properties as they are no longer loaded from state. ---
+        // They are now recalculated from backfilled data for better accuracy.
         public decimal LastRsiAvgGain { get; set; }
         public decimal LastRsiAvgLoss { get; set; }
         public decimal LastAtr { get; set; }

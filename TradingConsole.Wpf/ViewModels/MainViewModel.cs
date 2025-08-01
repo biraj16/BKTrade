@@ -1,4 +1,5 @@
-﻿using System;
+﻿// In TradingConsole.Wpf/ViewModels/MainViewModel.cs
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -716,7 +717,6 @@ namespace TradingConsole.Wpf.ViewModels
                 await InitializeDashboardAsync();
                 await PreloadNearestExpiriesAsync();
 
-                // --- BUG FIX: Pass the preloaded expiry dates to the Analysis Service ---
                 _analysisService.SetNearestExpiryDates(_nearestExpiryDates);
 
                 _ = Task.Run(LoadInitialOptionChainsAsync);
@@ -727,6 +727,8 @@ namespace TradingConsole.Wpf.ViewModels
                 await LoadOrdersAsync();
 
                 _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
+
+                // --- REVERTED: The IV refresh timer is set back to its original 30-second interval as requested. ---
                 _ivRefreshTimer = new Timer(async _ => await LoadInitialOptionChainsAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
 
                 _uiUpdateTimer.Change(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(200));

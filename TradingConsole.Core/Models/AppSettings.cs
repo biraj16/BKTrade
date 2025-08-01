@@ -85,8 +85,8 @@ namespace TradingConsole.Core.Models
                 new SignalDriver("Bearish Pattern at Key Resistance", 4),
                 new SignalDriver("Bearish Skew Divergence (Full)", 3),
                 new SignalDriver("Bearish OBV Div at range high", 3),
-                new SignalDriver("Bearish RSI Div at range high", 2),
                 new SignalDriver("Range Contraction", 2),
+                new SignalDriver("Bearish RSI Div at range high", 2),
                 new SignalDriver("Low volume suggests exhaustion (Bearish)", 1),
             };
 

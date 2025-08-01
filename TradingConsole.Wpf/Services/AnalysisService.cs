@@ -140,18 +140,13 @@ namespace TradingConsole.Wpf.Services
                 {
                     var key = $"{securityId}_{timeframe.TotalMinutes}";
 
-                    var priceEmaState = _multiTimeframePriceEmaState[securityId][timeframe];
-                    var vwapEmaState = _multiTimeframeVwapEmaState[securityId][timeframe];
+                    // --- FIX: No longer saving EMA state as it's recalculated on startup ---
                     var rsiState = _multiTimeframeRsiState[securityId][timeframe];
                     var atrState = _multiTimeframeAtrState[securityId][timeframe];
                     var obvState = _multiTimeframeObvState[securityId][timeframe];
 
                     var stateToSave = new IndicatorState
                     {
-                        LastShortEma = priceEmaState.CurrentShortEma,
-                        LastLongEma = priceEmaState.CurrentLongEma,
-                        LastVwapShortEma = vwapEmaState.CurrentShortEma,
-                        LastVwapLongEma = vwapEmaState.CurrentLongEma,
                         LastRsiAvgGain = rsiState.AvgGain,
                         LastRsiAvgLoss = rsiState.AvgLoss,
                         LastAtr = atrState.CurrentAtr,
@@ -274,10 +269,7 @@ namespace TradingConsole.Wpf.Services
 
                     if (savedState != null)
                     {
-                        priceEmaState.CurrentShortEma = savedState.LastShortEma;
-                        priceEmaState.CurrentLongEma = savedState.LastLongEma;
-                        vwapEmaState.CurrentShortEma = savedState.LastVwapShortEma;
-                        vwapEmaState.CurrentLongEma = savedState.LastVwapLongEma;
+                        // --- FIX: Removed the lines that tried to load non-existent EMA properties ---
                         rsiState.AvgGain = savedState.LastRsiAvgGain;
                         rsiState.AvgLoss = savedState.LastRsiAvgLoss;
                         atrState.CurrentAtr = savedState.LastAtr;
@@ -407,12 +399,8 @@ namespace TradingConsole.Wpf.Services
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
             var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
 
-            // --- FIX: This logic now correctly identifies the most recent trading day to fetch. ---
             DateTime dateToFetch = GetPreviousTradingDay(istNow);
 
-            // --- FIX: The check to prevent backfilling during market hours has been removed. ---
-            // The logic now correctly allows fetching the previous day's profile even if the app
-            // is started mid-day, which is crucial for correct daily bias analysis.
             if (_historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.Any(p => p.Date.Date == dateToFetch.Date) == true)
             {
                 Debug.WriteLine($"[BackfillPrevDay] Profile for {instrument.DisplayName} on {dateToFetch:yyyy-MM-dd} already exists. Skipping fetch.");
@@ -584,7 +572,6 @@ namespace TradingConsole.Wpf.Services
                 {
                     var aggregatedCandles = AggregateHistoricalCandles(candles, timeframe);
                     _multiTimeframeCandles[instrument.SecurityId][timeframe] = aggregatedCandles;
-                    // --- NEW: Trigger a full recalculation of indicators on this historical data ---
                     WarmupIndicators(instrument.SecurityId, timeframe);
                 }
             }
@@ -1732,7 +1719,6 @@ namespace TradingConsole.Wpf.Services
             result.IndexSignal = signal;
         }
 
-        // --- FIX: This method now correctly calculates the EMA in a stateful, efficient manner. ---
         private string CalculateEmaSignal(string securityId, List<Candle> candles, Dictionary<string, Dictionary<TimeSpan, EmaState>> stateDictionary, bool useVwap)
         {
             if (candles.Count < 2) return "Building History...";
@@ -1742,14 +1728,11 @@ namespace TradingConsole.Wpf.Services
             var lastCandle = candles.Last();
             var price = useVwap ? lastCandle.Vwap : lastCandle.Close;
 
-            // If the EMA has not been initialized (value is 0), we don't calculate.
-            // The WarmupIndicators method is now responsible for the initial calculation.
             if (state.CurrentShortEma == 0 || state.CurrentLongEma == 0)
             {
                 return "Warming Up...";
             }
 
-            // Standard EMA calculation for the new candle
             decimal shortMultiplier = 2.0m / (ShortEmaLength + 1);
             decimal longMultiplier = 2.0m / (LongEmaLength + 1);
 
@@ -1761,13 +1744,11 @@ namespace TradingConsole.Wpf.Services
             return "Neutral";
         }
 
-        // --- NEW: Helper method to perform a full, one-time calculation of indicators on historical data. ---
         private void WarmupIndicators(string securityId, TimeSpan timeframe)
         {
             var candles = _multiTimeframeCandles[securityId][timeframe];
             if (!candles.Any()) return;
 
-            // Warmup Price EMA
             var priceState = _multiTimeframePriceEmaState[securityId][timeframe];
             var closePrices = candles.Select(c => c.Close).ToList();
             if (closePrices.Count >= LongEmaLength)
@@ -1776,7 +1757,6 @@ namespace TradingConsole.Wpf.Services
                 priceState.CurrentLongEma = CalculateFullEma(closePrices, LongEmaLength);
             }
 
-            // Warmup VWAP EMA
             var vwapState = _multiTimeframeVwapEmaState[securityId][timeframe];
             var vwapPrices = candles.Select(c => c.Vwap).ToList();
             if (vwapPrices.Count >= LongEmaLength)
@@ -1788,13 +1768,12 @@ namespace TradingConsole.Wpf.Services
             Debug.WriteLine($"[IndicatorWarmup] Warmed up indicators for {securityId} on {timeframe.TotalMinutes}m timeframe.");
         }
 
-        // --- NEW: Helper method to calculate a full EMA series. ---
         private decimal CalculateFullEma(List<decimal> prices, int period)
         {
             if (prices.Count < period) return 0;
 
             decimal multiplier = 2.0m / (period + 1);
-            decimal ema = prices.Take(period).Average(); // Start with SMA
+            decimal ema = prices.Take(period).Average();
 
             for (int i = period; i < prices.Count; i++)
             {
