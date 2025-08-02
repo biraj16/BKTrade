@@ -40,6 +40,9 @@ namespace TradingConsole.Wpf.ViewModels
         {
             Symbol = source.Symbol;
             LTP = source.LTP;
+            // --- NEW: Update PriceChange properties ---
+            PriceChange = source.PriceChange;
+            PriceChangePercent = source.PriceChangePercent;
             Vwap = source.Vwap;
             CurrentVolume = source.CurrentVolume;
             AvgVolume = source.AvgVolume;
@@ -118,6 +121,12 @@ namespace TradingConsole.Wpf.ViewModels
         private string _securityId = string.Empty;
         private string _symbol = string.Empty;
         private decimal _ltp;
+        // --- NEW: Properties for Price Change display ---
+        private decimal _priceChange;
+        public decimal PriceChange { get => _priceChange; set => SetProperty(ref _priceChange, value); }
+        private decimal _priceChangePercent;
+        public decimal PriceChangePercent { get => _priceChangePercent; set => SetProperty(ref _priceChangePercent, value); }
+
         private decimal _vwap;
         private long _currentVolume;
         private long _avgVolume;

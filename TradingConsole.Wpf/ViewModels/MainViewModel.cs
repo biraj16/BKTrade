@@ -1376,8 +1376,12 @@ namespace TradingConsole.Wpf.ViewModels
                             SecurityId = ceInfo.SecurityId,
                             FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
-                            UnderlyingSymbol = indexInstrument.Symbol,
-                            InstrumentType = ceInfo.InstrumentType
+                            // --- FIX: Use the correct underlying symbol for lookups ---
+                            UnderlyingSymbol = scripMasterUnderlying,
+                            InstrumentType = ceInfo.InstrumentType,
+                            StrikePrice = ceInfo.StrikePrice,
+                            OptionType = ceInfo.OptionType,
+                            ExpiryDate = ceInfo.ExpiryDate
                         };
                         newOptionInstruments.Add(inst);
                         newSubscriptions[inst.SecurityId] = inst.SegmentId;
@@ -1388,13 +1392,17 @@ namespace TradingConsole.Wpf.ViewModels
                     {
                         var inst = new DashboardInstrument
                         {
-                            Symbol = ceInfo.SemInstrumentName,
-                            DisplayName = ceInfo.SemInstrumentName,
+                            Symbol = peInfo.SemInstrumentName,
+                            DisplayName = peInfo.SemInstrumentName,
                             SecurityId = peInfo.SecurityId,
                             FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
-                            UnderlyingSymbol = indexInstrument.Symbol,
-                            InstrumentType = ceInfo.InstrumentType
+                            // --- FIX: Use the correct underlying symbol for lookups ---
+                            UnderlyingSymbol = scripMasterUnderlying,
+                            InstrumentType = peInfo.InstrumentType,
+                            StrikePrice = peInfo.StrikePrice,
+                            OptionType = peInfo.OptionType,
+                            ExpiryDate = peInfo.ExpiryDate
                         };
                         newOptionInstruments.Add(inst);
                         newSubscriptions[inst.SecurityId] = inst.SegmentId;

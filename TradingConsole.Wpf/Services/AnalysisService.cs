@@ -1107,7 +1107,13 @@ namespace TradingConsole.Wpf.Services
                 _analysisResults[instrument.SecurityId] = result;
             }
 
+            // --- NEW: Calculate PriceChange and PriceChangePercent here ---
+            result.PriceChange = instrument.LTP - instrument.Close;
+            result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0;
+
+
             DashboardInstrument instrumentForAnalysis = instrument;
+            // For VWAP and volume-based indicators, always use the future if the current instrument is an index.
             if (instrument.InstrumentType == "INDEX")
             {
                 var future = _instrumentCache.Values.FirstOrDefault(i => i.IsFuture && i.UnderlyingSymbol == instrument.Symbol);
@@ -1174,7 +1180,7 @@ namespace TradingConsole.Wpf.Services
                 oiSignal = CalculateOiSignal(oneMinCandles);
             }
 
-            var paSignals = CalculatePriceActionSignals(instrumentForAnalysis, dayVwap);
+            var paSignals = CalculatePriceActionSignals(instrument, dayVwap);
             string customLevelSignal = CalculateCustomLevelSignal(instrument);
 
             string candleSignal1Min = "N/A";
@@ -1189,20 +1195,11 @@ namespace TradingConsole.Wpf.Services
                 result.InitialBalanceHigh = liveProfile.InitialBalanceHigh;
                 result.InitialBalanceLow = liveProfile.InitialBalanceLow;
 
-                if (liveProfile.IsInitialBalanceSet)
-                {
-                    result.DevelopingPoc = liveProfile.DevelopingTpoLevels.PointOfControl;
-                    result.DevelopingVah = liveProfile.DevelopingTpoLevels.ValueAreaHigh;
-                    result.DevelopingVal = liveProfile.DevelopingTpoLevels.ValueAreaLow;
-                    result.DevelopingVpoc = liveProfile.DevelopingVolumeProfile.VolumePoc;
-                }
-                else
-                {
-                    result.DevelopingPoc = 0;
-                    result.DevelopingVah = 0;
-                    result.DevelopingVal = 0;
-                    result.DevelopingVpoc = 0;
-                }
+                // --- FIX: Always assign developing profile values. Do not wait for Initial Balance to be set. ---
+                result.DevelopingPoc = liveProfile.DevelopingTpoLevels.PointOfControl;
+                result.DevelopingVah = liveProfile.DevelopingTpoLevels.ValueAreaHigh;
+                result.DevelopingVal = liveProfile.DevelopingTpoLevels.ValueAreaLow;
+                result.DevelopingVpoc = liveProfile.DevelopingVolumeProfile.VolumePoc;
 
                 RunMarketProfileAnalysis(instrument, liveProfile, result);
                 _marketProfileService.UpdateProfile(instrument.SecurityId, liveProfile.ToMarketProfileData());
@@ -1224,6 +1221,7 @@ namespace TradingConsole.Wpf.Services
 
 
             result.Symbol = instrument.DisplayName;
+            result.LTP = instrument.LTP;
             result.Vwap = dayVwap;
             result.CurrentIv = instrument.ImpliedVolatility;
             result.AvgIv = avgIv;
@@ -1277,101 +1275,132 @@ namespace TradingConsole.Wpf.Services
                 UpdateComprehensiveIndexSignal(result);
             }
 
+            // --- NEW: Link futures data to the index after all calculations are done ---
+            LinkFuturesDataToIndex();
+
             OnAnalysisUpdated?.Invoke(result);
         }
+
+        /// <summary>
+        /// Finds the Nifty Index and Nifty Futures analysis results and copies the VWAP-related
+        /// data from the futures to the index to ensure the UI shows the correct data.
+        /// </summary>
+        private void LinkFuturesDataToIndex()
+        {
+            var niftyIndex = _instrumentCache.Values.FirstOrDefault(i => i.Symbol == "Nifty 50");
+            var niftyFuture = _instrumentCache.Values.FirstOrDefault(i => i.IsFuture && i.UnderlyingSymbol == "NIFTY");
+
+            if (niftyIndex == null || niftyFuture == null) return;
+
+            if (_analysisResults.TryGetValue(niftyIndex.SecurityId, out var indexResult) &&
+                _analysisResults.TryGetValue(niftyFuture.SecurityId, out var futureResult))
+            {
+                indexResult.PriceVsVwapSignal = futureResult.PriceVsVwapSignal;
+                indexResult.VwapBandSignal = futureResult.VwapBandSignal;
+                indexResult.Vwap = futureResult.Vwap;
+                indexResult.VwapUpperBand = futureResult.VwapUpperBand;
+                indexResult.VwapLowerBand = futureResult.VwapLowerBand;
+                indexResult.AnchoredVwap = futureResult.AnchoredVwap;
+            }
+        }
+
 
         private void RunIvSkewAnalysis(DashboardInstrument indexInstrument)
         {
             if (!_ivSkewStates.ContainsKey(indexInstrument.SecurityId)) return;
-
-            if (!_nearestExpiryDates.TryGetValue(indexInstrument.Symbol, out var expiryDate))
-            {
-                return;
-            }
+            if (!_nearestExpiryDates.TryGetValue(indexInstrument.Symbol, out var expiryDate)) return;
 
             var state = _ivSkewStates[indexInstrument.SecurityId];
             var result = _analysisResults[indexInstrument.SecurityId];
-
             int strikeStep = GetStrikePriceStep(indexInstrument.Symbol);
             decimal atmStrike = Math.Round(indexInstrument.LTP / strikeStep) * strikeStep;
-
             string underlyingForLookup = GetUnderlyingSymbolForScripMaster(indexInstrument.Symbol);
 
-            var atmCall = _instrumentCache.Values.FirstOrDefault(i =>
-                i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == underlyingForLookup &&
-                i.OptionType == "CE" &&
-                i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
-                i.StrikePrice == atmStrike);
-
-            var atmPut = _instrumentCache.Values.FirstOrDefault(i =>
-                i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == underlyingForLookup &&
-                i.OptionType == "PE" &&
-                i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiryDate.Date &&
-                i.StrikePrice == atmStrike);
-
-            if (atmCall == null || atmPut == null || atmCall.ImpliedVolatility == 0 || atmPut.ImpliedVolatility == 0)
+            // --- NEW: Define a range of OTM strikes to analyze ---
+            const int otmStrikeCount = 4;
+            var otmCallStrikes = new List<decimal>();
+            var otmPutStrikes = new List<decimal>();
+            for (int i = 1; i <= otmStrikeCount; i++)
             {
-                result.IvSkewSignal = "ATM Options Not Found";
+                otmCallStrikes.Add(atmStrike + (i * strikeStep));
+                otmPutStrikes.Add(atmStrike - (i * strikeStep));
+            }
+
+            // Find ATM options
+            var atmCall = FindOptionInCache(underlyingForLookup, expiryDate, atmStrike, "CE");
+            var atmPut = FindOptionInCache(underlyingForLookup, expiryDate, atmStrike, "PE");
+
+            // Find OTM options
+            var foundOtmCalls = otmCallStrikes.Select(s => FindOptionInCache(underlyingForLookup, expiryDate, s, "CE")).Where(o => o != null && o.ImpliedVolatility > 0).ToList();
+            var foundOtmPuts = otmPutStrikes.Select(s => FindOptionInCache(underlyingForLookup, expiryDate, s, "PE")).Where(o => o != null && o.ImpliedVolatility > 0).ToList();
+
+
+            if (atmCall == null || atmPut == null || foundOtmCalls.Count < 2 || foundOtmPuts.Count < 2)
+            {
+                result.IvSkewSignal = "ATM/OTM Options Not Found";
                 return;
             }
 
-            state.CallIvHistory.Add(atmCall.ImpliedVolatility);
-            if (state.CallIvHistory.Count > 10) state.CallIvHistory.RemoveAt(0);
+            // Update history for ATM IVs
+            UpdateIvHistory(state.AtmCallIvHistory, atmCall.ImpliedVolatility);
+            UpdateIvHistory(state.AtmPutIvHistory, atmPut.ImpliedVolatility);
 
-            state.PutIvHistory.Add(atmPut.ImpliedVolatility);
-            if (state.PutIvHistory.Count > 10) state.PutIvHistory.RemoveAt(0);
-
-            decimal skew = atmPut.ImpliedVolatility - atmCall.ImpliedVolatility;
-            state.SkewHistory.Add(skew);
-            if (state.SkewHistory.Count > 10) state.SkewHistory.RemoveAt(0);
-
-            if (state.CallIvHistory.Count < 3)
+            if (state.AtmPutIvHistory.Count < 3)
             {
                 result.IvSkewSignal = "Building IV History...";
                 return;
             }
 
-            var lastCallIv = state.CallIvHistory.Last();
-            var prevCallIv = state.CallIvHistory[^2];
-            var lastPutIv = state.PutIvHistory.Last();
-            var prevPutIv = state.PutIvHistory[^2];
-            var oneMinCandles = GetCandles(indexInstrument.SecurityId, TimeSpan.FromMinutes(1));
-            var anchoredVwap = oneMinCandles?.LastOrDefault()?.AnchoredVwap ?? 0;
+            // Calculate current average OTM IVs and slopes
+            decimal avgOtmCallIv = foundOtmCalls.Average(o => o!.ImpliedVolatility);
+            decimal avgOtmPutIv = foundOtmPuts.Average(o => o!.ImpliedVolatility);
+            decimal putSkewSlope = avgOtmPutIv - atmPut.ImpliedVolatility;
+            decimal callSkewSlope = avgOtmCallIv - atmCall.ImpliedVolatility;
 
-            var lastFiveMinCandles = GetCandles(indexInstrument.SecurityId, TimeSpan.FromMinutes(5))?.TakeLast(2).ToList();
-            bool isNewLow = lastFiveMinCandles?.Count == 2 && lastFiveMinCandles[1].Low < lastFiveMinCandles[0].Low;
-            bool isNewHigh = lastFiveMinCandles?.Count == 2 && lastFiveMinCandles[1].High > lastFiveMinCandles[0].High;
+            // Update slope history
+            UpdateIvHistory(state.PutSkewSlopeHistory, putSkewSlope);
+            UpdateIvHistory(state.CallSkewSlopeHistory, callSkewSlope);
 
-            bool isBullishSkew = state.SkewHistory.Last() < state.SkewHistory[^2];
-            bool isBearishSkew = state.SkewHistory.Last() > state.SkewHistory[^2];
+            // Analyze the trend of the slopes
+            string putSkewTrend = CalculateTrend(state.PutSkewSlopeHistory, 5);
+            string callSkewTrend = CalculateTrend(state.CallSkewSlopeHistory, 5);
 
-
-            if (isNewLow && isBullishSkew) { result.IvSkewSignal = "Bullish Skew Divergence (Full)"; return; }
-            if (isBullishSkew) { result.IvSkewSignal = "Bullish Skew Divergence (Partial)"; return; }
-            if (isNewHigh && isBearishSkew) { result.IvSkewSignal = "Bearish Skew Divergence (Full)"; return; }
-            if (isBearishSkew) { result.IvSkewSignal = "Bearish Skew Divergence (Partial)"; return; }
-
-            if (lastCallIv > prevCallIv * 1.02m && lastCallIv > lastPutIv && indexInstrument.LTP > anchoredVwap)
+            if (putSkewTrend == "Trending Up" && putSkewSlope > 0)
             {
-                result.IvSkewSignal = "Bullish IV Momentum";
-                return;
+                result.IvSkewSignal = "Aggressive Bearish Skew (Fear Increasing)";
             }
-
-            if (lastPutIv > prevPutIv * 1.02m && lastPutIv > lastCallIv && indexInstrument.LTP < anchoredVwap)
+            else if (callSkewTrend == "Trending Up" && callSkewSlope > 0)
             {
-                result.IvSkewSignal = "Bearish IV Momentum";
-                return;
+                result.IvSkewSignal = "Aggressive Bullish Skew (Greed Increasing)";
             }
-
-            if (lastCallIv < prevCallIv && lastPutIv < prevPutIv)
+            else if (putSkewTrend == "Trending Down" && state.PutSkewSlopeHistory.LastOrDefault() < state.PutSkewSlopeHistory.FirstOrDefault())
             {
-                result.IvSkewSignal = "Range Contraction";
-                return;
+                result.IvSkewSignal = "Bearish Sentiment Fading";
             }
+            else if (callSkewTrend == "Trending Down" && state.CallSkewSlopeHistory.LastOrDefault() < state.CallSkewSlopeHistory.FirstOrDefault())
+            {
+                result.IvSkewSignal = "Bullish Sentiment Fading";
+            }
+            else
+            {
+                result.IvSkewSignal = (atmPut.ImpliedVolatility > atmCall.ImpliedVolatility) ? "Bearish Skew (Puts Pricier)" : "Bullish Skew (Calls Pricier)";
+            }
+        }
 
-            result.IvSkewSignal = "Neutral";
+        private DashboardInstrument? FindOptionInCache(string underlying, DateTime expiry, decimal strike, string type)
+        {
+            return _instrumentCache.Values.FirstOrDefault(i =>
+                i.InstrumentType == "OPTIDX" &&
+                i.UnderlyingSymbol == underlying &&
+                i.OptionType == type &&
+                i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiry.Date &&
+                i.StrikePrice == strike);
+        }
+
+        private void UpdateIvHistory(List<decimal> history, decimal value)
+        {
+            history.Add(value);
+            if (history.Count > 10) history.RemoveAt(0);
         }
 
         // --- MAGA REFACTOR: This method is now obsolete and replaced by the Thesis model ---

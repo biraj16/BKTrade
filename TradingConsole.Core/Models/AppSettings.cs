@@ -198,24 +198,11 @@ namespace TradingConsole.Core.Models
                 { "SENSEX", 1000 }
             };
 
+            // --- MODIFIED: Cleaned up the default list to focus only on Nifty ---
             MonitoredSymbols = new List<string>
             {
                 "IDX:Nifty 50",
-                "IDX:Nifty Bank",
-                "IDX:Sensex",
-                "EQ:HDFCBANK",
-                "EQ:ICICIBANK",
-                "EQ:RELIANCE INDUSTRIES",
-                "EQ:INFOSYS",
-                "EQ:ITC",
-                "EQ:TATA CONSULTANCY",
-                "FUT:NIFTY",
-                "FUT:BANKNIFTY",
-                "FUT:HDFCBANK",
-                "FUT:ICICIBANK",
-                "FUT:RELIANCE",
-                "FUT:INFY",
-                "FUT:TCS"
+                "FUT:NIFTY"
             };
 
             ShortEmaLength = 9;

@@ -6,6 +6,11 @@ using TradingConsole.Core.Models;
 
 namespace TradingConsole.Wpf.Services
 {
+    #region Core Data Models
+
+    /// <summary>
+    /// Represents a single candlestick with price, volume, and open interest data.
+    /// </summary>
     public class Candle
     {
         public DateTime Timestamp { get; set; }
@@ -15,13 +20,10 @@ namespace TradingConsole.Wpf.Services
         public decimal Close { get; set; }
         public long Volume { get; set; }
         public long OpenInterest { get; set; }
-
         public decimal Vwap { get; set; }
-        // --- NEW: Property for Anchored VWAP ---
         public decimal AnchoredVwap { get; set; }
         internal decimal CumulativePriceVolume { get; set; } = 0;
         internal long CumulativeVolume { get; set; } = 0;
-
 
         public override string ToString()
         {
@@ -29,12 +31,22 @@ namespace TradingConsole.Wpf.Services
         }
     }
 
+    #endregion
+
+    #region Indicator State Models
+
+    /// <summary>
+    /// Holds the running state for Exponential Moving Average (EMA) calculations.
+    /// </summary>
     public class EmaState
     {
         public decimal CurrentShortEma { get; set; }
         public decimal CurrentLongEma { get; set; }
     }
 
+    /// <summary>
+    /// Holds the running state for Relative Strength Index (RSI) calculations.
+    /// </summary>
     public class RsiState
     {
         public decimal AvgGain { get; set; }
@@ -42,12 +54,18 @@ namespace TradingConsole.Wpf.Services
         public List<decimal> RsiValues { get; } = new List<decimal>();
     }
 
+    /// <summary>
+    /// Holds the running state for Average True Range (ATR) calculations.
+    /// </summary>
     public class AtrState
     {
         public decimal CurrentAtr { get; set; }
         public List<decimal> AtrValues { get; } = new List<decimal>();
     }
 
+    /// <summary>
+    /// Holds the running state for On-Balance Volume (OBV) calculations.
+    /// </summary>
     public class ObvState
     {
         public decimal CurrentObv { get; set; }
@@ -55,6 +73,13 @@ namespace TradingConsole.Wpf.Services
         public decimal CurrentMovingAverage { get; set; }
     }
 
+    #endregion
+
+    #region Market Context Models
+
+    /// <summary>
+    /// Holds the state for analyzing relative strength between spot and futures to determine institutional intent.
+    /// </summary>
     public class RelativeStrengthState
     {
         public List<decimal> BasisDeltaHistory { get; } = new List<decimal>();
@@ -62,15 +87,22 @@ namespace TradingConsole.Wpf.Services
         public string InstitutionalIntentSignal { get; set; } = "Neutral";
     }
 
-    // --- ADDED: New state class for IV Skew analysis ---
+    /// <summary>
+    /// Holds the state for analyzing Implied Volatility (IV) skew between calls and puts.
+    /// </summary>
     public class IvSkewState
     {
-        public List<decimal> CallIvHistory { get; } = new List<decimal>();
-        public List<decimal> PutIvHistory { get; } = new List<decimal>();
-        public List<decimal> SkewHistory { get; } = new List<decimal>();
+        public List<decimal> AtmCallIvHistory { get; } = new List<decimal>();
+        public List<decimal> AtmPutIvHistory { get; } = new List<decimal>();
+        public List<decimal> OtmCallIvHistory { get; } = new List<decimal>();
+        public List<decimal> OtmPutIvHistory { get; } = new List<decimal>();
+        public List<decimal> PutSkewSlopeHistory { get; } = new List<decimal>();
+        public List<decimal> CallSkewSlopeHistory { get; } = new List<decimal>();
     }
 
-
+    /// <summary>
+    /// Holds the state for intraday Implied Volatility (IV) analysis, including daily range and percentile history.
+    /// </summary>
     public class IntradayIvState
     {
         public decimal DayHighIv { get; set; } = 0;
@@ -86,6 +118,13 @@ namespace TradingConsole.Wpf.Services
         }
     }
 
+    #endregion
+
+    #region Market Profile
+
+    /// <summary>
+    /// Represents and calculates the market profile for a trading session, including TPO and Volume profiles.
+    /// </summary>
     public class MarketProfile
     {
         public SortedDictionary<decimal, List<char>> TpoLevels { get; } = new SortedDictionary<decimal, List<char>>();
@@ -155,4 +194,6 @@ namespace TradingConsole.Wpf.Services
             };
         }
     }
+
+    #endregion
 }
